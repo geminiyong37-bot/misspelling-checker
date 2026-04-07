@@ -1,0 +1,136 @@
+import os
+import json
+import requests
+import math
+import sys
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_API_KEY_ENV = os.environ.get("GEMINI_API_KEY") or os.environ.get("TYPING_GEMINI_KEY")
+
+SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 공문서 작성 전문가입니다.
+오직 다음 항목만 찾아주시고, 반드시 순수 JSON(errors 배열)만 출력하세요.
+
+[오타 검출 규칙]
+1. 단순 맞춤법/철자 오류 (예: '됬다' → '됐다', '않습니다' → '안 합니다')
+2. 띄어쓰기 오류 (예: '국민은행입구' → '국민은행 입구')
+3. 개조식/표 안에서 문맥상 명백한 오타 (예: '예산잔액' vs '예산 잔액')
+
+[반드시 제외할 항목]
+- 연도 표기 시 ' ('24년, '25년 등) 표현은 정상적인 줄임표 표현이므로 수정하지 마세요.
+- 개조식 문단(□, ○, -, · 등)은 현재 상태 그대로 놔두세요.
+- HTML 엔티티(&amp;#, &lt; 등)는 깨진 문자열로 간주하지 않고 무시하세요.
+- 고유명사/기관명/법령명은 수정하지 마세요.
+- 숫자/금액/날짜 표기 방식 차이는 정상 표현입니다.
+- 괄호 레이블 뒤의 콜론(:) 유무, 가운데점(·) 의존도, 천 단위 쉼표 차이는 오타가 아닙니다.
+- 표 텍스트는 셀 간 경계가 불분명하므로 단어가 붙어 있어도 그대로 두세요.
+
+[출력 JSON 스키마 - 반드시 이 필드명을 사용하세요]
+{
+  "errors": [
+    {
+      "page": 1,
+      "sentence": "오류가 포함된 전체 문장",
+      "original": "수정 전 오류 표현",
+      "corrected": "수정 후 올바른 표현",
+      "reason": "오류 이유 설명",
+      "errorType": "spelling | spacing | grammar"
+    }
+  ]
+}
+오류가 없으면 {"errors": []} 을 반환하세요.
+"""
+
+def build_user_prompt(doc):
+    sentences = doc.get("sentences", [])
+    lines = []
+    for idx, sentence in enumerate(sentences):
+        text = re.sub(r"\s+", " ", (sentence.get("text") or "")).replace('"', '\\"')
+        meta = (sentence.get("meta") or "meta 없음").replace("|", "\\|")
+        lines.append(f'{idx + 1}. text="{text}" | meta="{meta}" | page={sentence.get("pageNumber", "?")}')
+    
+    list_section = "\n".join(lines) if lines else "검사할 문장이 없습니다."
+    title = doc.get("metadata", {}).get("title") or os.path.basename(doc.get("file", "문서"))
+    
+    return f"[문서 제목] {title}\n[출처 파일] {doc.get('file', '알 수 없음')}\n[문장 리스트]\n{list_section}\n\n[요청 사항]\n- 공문서 표기는 그대로 유지하고, 오타나 맞춤법 오류만 지적하세요.\n- 각 문장은 meta 정보를 참고해서 의도된 표현인지 판단해 주세요.\n- function result는 아래 JSON schema에 맞춰서 errors 배열만 반환하세요.\n"
+
+def sanitize_response_text(text):
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```json"):
+        cleaned = re.sub(r"^```json\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    elif cleaned.startswith("```"):
+        cleaned = re.sub(r"^```\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned
+
+def build_prompt_payload(doc):
+    system = SYSTEM_PROMPT
+    user = build_user_prompt(doc)
+    combined = f"{system}\n\n{user}"
+    return {
+        "system": system,
+        "user": user,
+        "combined": combined
+    }
+
+def call_gemini(prompt_text, api_key=None):
+    key = api_key or GEMINI_API_KEY_ENV
+    if not key:
+        raise ValueError("Gemini API key is missing. Set GEMINI_API_KEY environment variable.")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0,
+            "topP": 0.01,
+            "topK": 1
+        }
+    }
+    
+    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+    if response.status_code != 200:
+        raise Exception(f"Gemini request failed ({response.status_code}): {response.text}")
+    
+    data = response.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        return ""
+
+import re
+
+def parse_errors(response_text):
+    cleaned = sanitize_response_text(response_text)
+    if not cleaned:
+        return []
+    try:
+        parsed = json.loads(cleaned)
+        return parsed.get("errors", []) if isinstance(parsed.get("errors"), list) else []
+    except json.JSONDecodeError as e:
+        raise Exception(f"AI 응답을 JSON으로 파싱할 수 없습니다: {str(e)}\n{cleaned}")
+
+BATCH_SIZE = 50
+
+def run_gemini_check(doc):
+    sentences = doc.get("sentences", [])
+    if not sentences:
+        return []
+
+    all_errors = []
+    total_batches = math.ceil(len(sentences) / BATCH_SIZE)
+
+    for i in range(0, len(sentences), BATCH_SIZE):
+        batch = sentences[i:i + BATCH_SIZE]
+        batch_num = (i // BATCH_SIZE) + 1
+        print(f"AI 검사 중: 배치 {batch_num} / {total_batches} 처리 중...")
+
+        partial_doc = {**doc, "sentences": batch}
+        payload = build_prompt_payload(partial_doc)
+
+        raw = call_gemini(payload["combined"])
+        errors = parse_errors(raw)
+        all_errors.extend(errors)
+
+    return all_errors
