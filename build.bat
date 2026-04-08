@@ -25,3 +25,4 @@ rmdir /s /q "%STAGING%"
 
 echo 완료: Output\AI_Word_Speller_Setup.exe
 endlocal
+pause

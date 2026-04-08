@@ -2,8 +2,6 @@ import os
 import sys
 import threading
 import json
-import time
-import math
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QTimer
 from PyQt6.QtGui import QFont, QPalette, QColor
@@ -17,7 +15,7 @@ from PyQt6.QtWidgets import (
 from hwp_parser import parse_with_kordoc
 from doc_model import build_doc_from_parse_result
 from ai_client import (
-    run_ai_check, PROVIDER_GEMINI, PROVIDER_OPENAI, PROVIDER_ANTHROPIC, MODEL_MAP
+    run_ai_check, PROVIDER_GEMINI, PROVIDER_OPENAI, PROVIDER_ANTHROPIC
 )
 from excel_exporter import export_to_excel
 
@@ -289,7 +287,7 @@ class CheckWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"문서 맞춤법 검사기 (AI) v{APP_VERSION}")
+        self.setWindowTitle(f"문서 맞춤법 검사기 v{APP_VERSION}")
         self.setFixedSize(440, 720)
         self._apply_theme()
         self._build_ui()
@@ -305,7 +303,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(14)
 
-        title = QLabel("AI 문서 맞춤법 검사기")
+        title = QLabel("문서 맞춤법 검사기")
         title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         title.setObjectName("headerTitle")
 

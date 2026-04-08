@@ -2,8 +2,8 @@ import os
 import json
 import re
 import requests
-import math
-import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rag_context import build_rag_prompt_section
 
 PROVIDER_GEMINI = "gemini"
@@ -33,6 +33,7 @@ SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 
 - 숫자/금액/날짜 표기 방식 차이는 정상 표현입니다.
 - 괄호 레이블 뒤의 콜론(:) 유무, 가운데점(·) 의존도, 천 단위 쉼표 차이는 오타가 아닙니다.
 - 표 텍스트는 셀 간 경계가 불분명하므로 단어가 붙어 있어도 그대로 두세요.
+- meta에 "글자단위띄어쓰기(의도적서식)"가 포함된 문장은 가독성을 위한 의도적 서식이므로 어떤 오류도 지적하지 마세요.
 
 [출력 JSON 스키마 - 반드시 이 필드명을 사용하세요]
 {
@@ -59,7 +60,7 @@ def build_user_prompt(doc):
         lines.append(f'{idx + 1}. text="{text}" | meta="{meta}" | page={sentence.get("pageNumber", "?")}')
     
     list_section = "\n".join(lines) if lines else "검사할 문장이 없습니다."
-    title = doc.get("metadata", {}).get("title") or os.path.basename(doc.get("file", "문서"))
+    title = (doc.get("metadata") or {}).get("title") or os.path.basename(doc.get("file", "문서"))
     
     return f"[문서 제목] {title}\n[출처 파일] {doc.get('file', '알 수 없음')}\n[문장 리스트]\n{list_section}\n\n[요청 사항]\n- 공문서 표기는 그대로 유지하고, 오타나 맞춤법 오류만 지적하세요.\n- 각 문장은 meta 정보를 참고해서 의도된 표현인지 판단해 주세요.\n- function result는 아래 JSON schema에 맞춰서 errors 배열만 반환하세요.\n"
 
@@ -153,6 +154,34 @@ def parse_errors(response_text):
         raise Exception(f"AI 응답을 JSON으로 파싱할 수 없습니다: {str(e)}\n{cleaned}")
 
 BATCH_SIZE = 50
+MAX_WORKERS = 3
+
+class RateLimitError(Exception):
+    pass
+
+def _call_provider(provider, payload, api_key):
+    if provider == PROVIDER_OPENAI:
+        raw = call_openai(payload["system"], payload["user"], api_key)
+    elif provider == PROVIDER_ANTHROPIC:
+        raw = call_anthropic(payload["system"], payload["user"], api_key)
+    else:
+        raw = call_gemini(payload["combined"], api_key)
+    return raw
+
+def _is_rate_limit_error(e):
+    return "429" in str(e)
+
+def _run_batches_sequential(batches, doc, provider, api_key, progress_callback, total_batches, start_batch_num=1):
+    all_errors = []
+    for idx, batch in enumerate(batches):
+        batch_num = start_batch_num + idx
+        if progress_callback:
+            progress_callback(batch_num, total_batches)
+        partial_doc = {**doc, "sentences": batch}
+        payload = build_prompt_payload(partial_doc)
+        raw = _call_provider(provider, payload, api_key)
+        all_errors.extend(parse_errors(raw))
+    return all_errors
 
 def run_ai_check(doc, progress_callback=None):
     sentences = doc.get("sentences", [])
@@ -162,32 +191,62 @@ def run_ai_check(doc, progress_callback=None):
     provider = os.environ.get("TYPO_PROVIDER", PROVIDER_GEMINI)
     api_key = os.environ.get("TYPO_API_KEY")
     if not api_key:
-        # Backward compatibility
         api_key = os.environ.get("GEMINI_API_KEY")
-    
     if not api_key:
         raise ValueError("API key is missing. Please set it in the application settings.")
 
-    all_errors = []
-    total_batches = math.ceil(len(sentences) / BATCH_SIZE)
+    batches = [sentences[i:i + BATCH_SIZE] for i in range(0, len(sentences), BATCH_SIZE)]
+    total_batches = len(batches)
+    completed = [0]
 
-    for i in range(0, len(sentences), BATCH_SIZE):
-        batch = sentences[i:i + BATCH_SIZE]
-        batch_num = (i // BATCH_SIZE) + 1
-        if progress_callback:
-            progress_callback(batch_num, total_batches)
-
+    def run_batch(batch_num, batch):
         partial_doc = {**doc, "sentences": batch}
         payload = build_prompt_payload(partial_doc)
-
-        if provider == PROVIDER_OPENAI:
-            raw = call_openai(payload["system"], payload["user"], api_key)
-        elif provider == PROVIDER_ANTHROPIC:
-            raw = call_anthropic(payload["system"], payload["user"], api_key)
-        else:
-            raw = call_gemini(payload["combined"], api_key)
-
+        try:
+            raw = _call_provider(provider, payload, api_key)
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise RateLimitError(str(e))
+            raise
         errors = parse_errors(raw)
-        all_errors.extend(errors)
+        completed[0] += 1
+        if progress_callback:
+            progress_callback(completed[0], total_batches)
+        return batch_num, errors
 
-    return all_errors
+    # 병렬 시도
+    results = {}
+    rate_limited_from = None
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(run_batch, i, batch): i for i, batch in enumerate(batches)}
+        for future in as_completed(futures):
+            try:
+                batch_num, errors = future.result()
+                results[batch_num] = errors
+            except RateLimitError:
+                # 429 발생 — 나머지 배치 인덱스 파악 후 순차 처리로 전환
+                rate_limited_from = min(
+                    idx for idx, f in futures.items() if f not in [ff for ff in results]
+                    if idx not in results
+                ) if any(idx not in results for idx in futures.values()) else None
+                # 실행 중인 future 취소 (이미 시작된 건 못 막음)
+                for f in futures:
+                    f.cancel()
+                break
+
+    # 429 폴백: 아직 처리 안 된 배치 순차 처리
+    if rate_limited_from is not None:
+        remaining = [(i, batches[i]) for i in range(len(batches)) if i not in results]
+        remaining.sort()
+        time.sleep(2)  # 잠깐 대기 후 순차 재시도
+        for i, batch in remaining:
+            if progress_callback:
+                progress_callback(completed[0] + 1, total_batches)
+            partial_doc = {**doc, "sentences": batch}
+            payload = build_prompt_payload(partial_doc)
+            raw = _call_provider(provider, payload, api_key)
+            results[i] = parse_errors(raw)
+            completed[0] += 1
+
+    return [err for i in sorted(results) for err in results[i]]

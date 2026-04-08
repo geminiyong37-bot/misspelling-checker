@@ -78,6 +78,16 @@ def collect_pages(blocks):
         })
     return result
 
+def is_char_spaced(text):
+    """글자 단위 띄어쓰기 여부 감지 (예: '자 격 요 건')"""
+    if not text or len(text) < 3:
+        return False
+    tokens = text.split(" ")
+    if len(tokens) < 2:
+        return False
+    single_char_count = sum(1 for t in tokens if len(t) == 1)
+    return single_char_count / len(tokens) >= 0.7
+
 def describe_sentence(sentence):
     parts = []
     block_type = sentence.get("blockType")
@@ -94,6 +104,9 @@ def describe_sentence(sentence):
         else:
             parts.append("table")
             
+    if sentence.get("charSpaced"):
+        parts.append("글자단위띄어쓰기(의도적서식)")
+
     fn = sentence.get("blockFootnote")
     if fn:
         parts.append(f"각주: {fn}")
@@ -145,7 +158,8 @@ def build_sentence_units(pages):
                                     "rowIndex": r_idx,
                                     "cellIndex": c_idx,
                                     "blockIndex": b_idx,
-                                    "sentenceIndex": s_idx
+                                    "sentenceIndex": s_idx,
+                                    "charSpaced": is_char_spaced(s_text)
                                 }))
     return units
 

@@ -24,12 +24,24 @@ Filename: "{app}\MisspellingChecker.exe"; Description: "{cm:LaunchProgram,AI 문
 var
   APIKeyPage: TInputQueryWizardPage;
 
+procedure OnAPIKeyChange(Sender: TObject);
+begin
+  WizardForm.NextButton.Enabled := Trim(APIKeyPage.Values[0]) <> '';
+end;
+
 procedure InitializeWizard;
 begin
   APIKeyPage := CreateInputQueryPage(wpWelcome,
     'API 키 설정', '문서 검사를 위해 Gemini, OpenAI 또는 Anthropic API 키가 필요합니다.',
-    'API 키를 입력해 주세요. (입력하지 않으면 나중에 앱 실행 시 입력할 수 있습니다.)');
+    'API 키를 입력해 주세요.');
   APIKeyPage.Add('API 키:', False);
+  APIKeyPage.Edits[0].OnChange := @OnAPIKeyChange;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = APIKeyPage.ID then
+    WizardForm.NextButton.Enabled := Trim(APIKeyPage.Values[0]) <> '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
