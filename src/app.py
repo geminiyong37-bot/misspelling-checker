@@ -4,7 +4,7 @@ import threading
 import json
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QTimer
-from PyQt6.QtGui import QFont, QPalette, QColor
+from PyQt6.QtGui import QFont, QPalette, QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QProgressBar,
@@ -288,6 +288,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"문서 맞춤법 검사기 v{APP_VERSION}")
+        icon_path = resource_path(os.path.join("assets", "app-icon.png"))
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.setFixedSize(440, 720)
         self._apply_theme()
         self._build_ui()

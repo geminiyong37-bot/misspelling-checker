@@ -9,6 +9,7 @@ a = Analysis(
     datas=[
         ('c:/antigravity/kordoc', 'kordoc'),
         ('docs/공문서_지침_압축.txt', 'docs/공문서_지침_압축.txt'),
+        ('assets/app-icon.png', 'assets'),
     ],
     hiddenimports=['requests', 'openpyxl', 'PyQt6'],
     hookspath=[],
@@ -29,6 +30,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='MisspellingChecker',
+    icon='assets/app-icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
