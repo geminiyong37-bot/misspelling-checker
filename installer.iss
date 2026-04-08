@@ -1,0 +1,65 @@
+[Setup]
+AppName=AI 문서 맞춤법 검사기
+AppVersion=2.0.0
+DefaultDirName={autopf}\AI_Word_Speller
+DefaultGroupName=AI 문서 맞춤법 검사기
+OutputBaseFilename=AI_Word_Speller_Setup
+Compression=lzma
+SolidCompression=yes
+
+[Files]
+Source: "Output\_staging\MisspellingChecker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\AI 문서 맞춤법 검사기"; Filename: "{app}\MisspellingChecker.exe"
+Name: "{autodesktop}\AI 문서 맞춤법 검사기"; Filename: "{app}\MisspellingChecker.exe"; Tasks: desktopicon
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Run]
+Filename: "{app}\MisspellingChecker.exe"; Description: "{cm:LaunchProgram,AI 문서 맞춤법 검사기}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+var
+  APIKeyPage: TInputQueryWizardPage;
+
+procedure InitializeWizard;
+begin
+  APIKeyPage := CreateInputQueryPage(wpWelcome,
+    'API 키 설정', '문서 검사를 위해 Gemini, OpenAI 또는 Anthropic API 키가 필요합니다.',
+    'API 키를 입력해 주세요. (입력하지 않으면 나중에 앱 실행 시 입력할 수 있습니다.)');
+  APIKeyPage.Add('API 키:', False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ConfigPath: String;
+  APIKey: String;
+  Provider: String;
+  JsonContent: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    APIKey := Trim(APIKeyPage.Values[0]);
+    if APIKey <> '' then
+    begin
+      // 공급자 감지 로직
+      if Pos('sk-ant-', APIKey) = 1 then
+        Provider := 'anthropic'
+      else if Pos('sk-', APIKey) = 1 then
+        Provider := 'openai'
+      else
+        Provider := 'gemini';
+
+      ConfigPath := ExpandConstant('{%USERPROFILE}\.misspelling_checker_config.json');
+      JsonContent := '{' + #13#10 +
+                     '  "provider": "' + Provider + '",' + #13#10 +
+                     '  "keys": {' + #13#10 +
+                     '    "' + Provider + '": "' + APIKey + '"' + #13#10 +
+                     '  }' + #13#10 +
+                     '}';
+      SaveStringToFile(ConfigPath, JsonContent, False);
+    end;
+  end;
+end;

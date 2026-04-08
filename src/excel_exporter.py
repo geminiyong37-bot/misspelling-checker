@@ -48,29 +48,38 @@ def create_workbook(rows):
         cell.fill = HEADER_FILL
         cell.alignment = header_alignment
 
-    combination_counts = {}
+    # 중복 제거 및 데이터 그룹화
+    unique_errors = {}
     for row in rows:
-        key = f"{row['file']}|{row['page']}|{row['original']}"
-        combination_counts[key] = combination_counts.get(key, 0) + 1
+        key = (row["original"], row["corrected"])
+        if key not in unique_errors:
+            unique_errors[key] = {
+                "file": row["file"],
+                "original": row["original"],
+                "corrected": row["corrected"],
+                "help": row.get("help") or row.get("reason", ""),
+                "count": 0,
+                "pages": set()
+            }
+        unique_errors[key]["count"] += 1
+        unique_errors[key]["pages"].add(str(row.get("page", 1)))
 
     file_color_map = {}
     color_idx = 0
 
-    for row in rows:
-        display_name = os.path.basename(row["file"])
+    for key, data in unique_errors.items():
+        original = data["original"]
+        corrected = data["corrected"]
+        note = data["help"]
+        count = data["count"]
+        display_name = os.path.basename(data["file"])
         if display_name not in file_color_map:
             file_color_map[display_name] = FILE_COLORS[color_idx % len(FILE_COLORS)]
             color_idx += 1
         
         file_bg_color = file_color_map[display_name]
         
-        original = row["original"]
-        corrected = row["corrected"]
-        note = row["help"]
-        key = f"{row['file']}|{row['page']}|{original}"
-        
-        repeated = combination_counts.get(key, 1)
-        note_text = f"[중복 {repeated}회] {note}" if repeated > 1 else note
+        note_text = f"[중복 {count}회] {note}" if count > 1 else note
 
         ws.append([display_name, original, corrected, note_text])
         current_row = ws.max_row

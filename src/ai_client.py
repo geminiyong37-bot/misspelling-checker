@@ -1,11 +1,20 @@
 import os
 import json
+import re
 import requests
 import math
 import sys
+from rag_context import build_rag_prompt_section
 
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_API_KEY_ENV = os.environ.get("GEMINI_API_KEY") or os.environ.get("TYPING_GEMINI_KEY")
+PROVIDER_GEMINI = "gemini"
+PROVIDER_OPENAI = "openai"
+PROVIDER_ANTHROPIC = "anthropic"
+
+MODEL_MAP = {
+    PROVIDER_GEMINI: "gemini-2.5-flash",
+    PROVIDER_OPENAI: "gpt-4o-mini",
+    PROVIDER_ANTHROPIC: "claude-haiku-4-5-20251001"
+}
 
 SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 공문서 작성 전문가입니다.
 오직 다음 항목만 찾아주시고, 반드시 순수 JSON(errors 배열)만 출력하세요.
@@ -17,7 +26,8 @@ SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 
 
 [반드시 제외할 항목]
 - 연도 표기 시 ' ('24년, '25년 등) 표현은 정상적인 줄임표 표현이므로 수정하지 마세요.
-- 개조식 문단(□, ○, -, · 등)은 현재 상태 그대로 놔두세요.
+- 개조식 문단(□, ○, -, · 등)은 현재 상태 그대로 놔두세요. 마침표(.)가 없는 것도 정상입니다.
+- 개조식 문장 끝에 마침표(.)가 누락된 것은 오타나 문법 오류로 간주하지 마세요.
 - HTML 엔티티(&amp;#, &lt; 등)는 깨진 문자열로 간주하지 않고 무시하세요.
 - 고유명사/기관명/법령명은 수정하지 마세요.
 - 숫자/금액/날짜 표기 방식 차이는 정상 표현입니다.
@@ -65,20 +75,21 @@ def sanitize_response_text(text):
 
 def build_prompt_payload(doc):
     system = SYSTEM_PROMPT
+    rag_section = build_rag_prompt_section()
     user = build_user_prompt(doc)
-    combined = f"{system}\n\n{user}"
+    
+    # 시스템 프롬프트에 RAG 지침 추가
+    full_system = f"{system}\n{rag_section}" if rag_section else system
+    
+    combined = f"{full_system}\n\n{user}"
     return {
-        "system": system,
+        "system": full_system,
         "user": user,
         "combined": combined
     }
 
-def call_gemini(prompt_text, api_key=None):
-    key = api_key or GEMINI_API_KEY_ENV
-    if not key:
-        raise ValueError("Gemini API key is missing. Set GEMINI_API_KEY environment variable.")
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
+def call_gemini(prompt_text, api_key, model=MODEL_MAP[PROVIDER_GEMINI]):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -88,18 +99,48 @@ def call_gemini(prompt_text, api_key=None):
             "topK": 1
         }
     }
-    
     response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
     if response.status_code != 200:
         raise Exception(f"Gemini request failed ({response.status_code}): {response.text}")
-    
     data = response.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
         return ""
 
-import re
+def call_openai(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_OPENAI]):
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+    if response.status_code != 200:
+        raise Exception(f"OpenAI request failed ({response.status_code}): {response.text}")
+    return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+def call_anthropic(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_ANTHROPIC]):
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    payload = {
+        "model": model,
+        "max_tokens": 8096,
+        "temperature": 0,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_text}],
+    }
+    response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
+    if response.status_code != 200:
+        raise Exception(f"Anthropic request failed ({response.status_code}): {response.text}")
+    return response.json().get("content", [{}])[0].get("text", "")
 
 def parse_errors(response_text):
     cleaned = sanitize_response_text(response_text)
@@ -113,10 +154,19 @@ def parse_errors(response_text):
 
 BATCH_SIZE = 50
 
-def run_gemini_check(doc):
+def run_ai_check(doc, progress_callback=None):
     sentences = doc.get("sentences", [])
     if not sentences:
         return []
+
+    provider = os.environ.get("TYPO_PROVIDER", PROVIDER_GEMINI)
+    api_key = os.environ.get("TYPO_API_KEY")
+    if not api_key:
+        # Backward compatibility
+        api_key = os.environ.get("GEMINI_API_KEY")
+    
+    if not api_key:
+        raise ValueError("API key is missing. Please set it in the application settings.")
 
     all_errors = []
     total_batches = math.ceil(len(sentences) / BATCH_SIZE)
@@ -124,12 +174,19 @@ def run_gemini_check(doc):
     for i in range(0, len(sentences), BATCH_SIZE):
         batch = sentences[i:i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
-        print(f"AI 검사 중: 배치 {batch_num} / {total_batches} 처리 중...")
+        if progress_callback:
+            progress_callback(batch_num, total_batches)
 
         partial_doc = {**doc, "sentences": batch}
         payload = build_prompt_payload(partial_doc)
 
-        raw = call_gemini(payload["combined"])
+        if provider == PROVIDER_OPENAI:
+            raw = call_openai(payload["system"], payload["user"], api_key)
+        elif provider == PROVIDER_ANTHROPIC:
+            raw = call_anthropic(payload["system"], payload["user"], api_key)
+        else:
+            raw = call_gemini(payload["combined"], api_key)
+
         errors = parse_errors(raw)
         all_errors.extend(errors)
 
