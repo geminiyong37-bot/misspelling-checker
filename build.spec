@@ -8,7 +8,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('c:/antigravity/kordoc', 'kordoc'),
-        ('docs/공문서_지침_압축.txt', 'docs/공문서_지침_압축.txt'),
+        ('docs/공문서_지침_압축.txt', 'docs'),
         ('assets/app-icon.png', 'assets'),
     ],
     hiddenimports=['requests', 'openpyxl', 'PyQt6'],

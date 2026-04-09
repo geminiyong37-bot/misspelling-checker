@@ -35,7 +35,7 @@ end;
 procedure InitializeWizard;
 begin
   APIKeyPage := CreateInputQueryPage(wpWelcome,
-    'API 키 설정', 'Gemini, OpenAI 또는 Anthropic API 중 하나를 입력해 주세요.',
+    'API 키 설정', 'Gemini (gemini-2.5-flash), OpenAI (gpt-4o-mini) 또는 Anthropic (claude-haiku) API 중 하나를 입력해 주세요.',
     'API 키를 입력해 주세요.');
   APIKeyPage.Add('API 키:', False);
   APIKeyPage.Edits[0].OnChange := @OnAPIKeyChange;
