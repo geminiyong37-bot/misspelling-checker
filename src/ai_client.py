@@ -3,6 +3,7 @@ import json
 import re
 import requests
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rag_context import build_rag_prompt_section
 
@@ -113,7 +114,7 @@ def call_gemini(prompt_text, api_key, model=MODEL_MAP[PROVIDER_GEMINI]):
             "topK": 1
         }
     }
-    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=60)
     if response.status_code != 200:
         raise Exception(f"Gemini request failed ({response.status_code}): {response.text}")
     data = response.json()
@@ -133,7 +134,7 @@ def call_openai(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_OPEN
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
-    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
         raise Exception(f"OpenAI request failed ({response.status_code}): {response.text}")
     return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -151,7 +152,7 @@ def call_anthropic(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_A
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_text}],
     }
-    response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
+    response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
         raise Exception(f"Anthropic request failed ({response.status_code}): {response.text}")
     return response.json().get("content", [{}])[0].get("text", "")
@@ -162,13 +163,16 @@ def parse_errors(response_text):
         return []
     try:
         parsed = json.loads(cleaned)
-        return parsed.get("errors", []) if isinstance(parsed.get("errors"), list) else []
+        errors = parsed.get("errors", []) if isinstance(parsed.get("errors"), list) else []
+        # [IMPROVED] 수정 전후가 같은 노이즈 필터링
+        return [e for e in errors if e.get("original") != e.get("corrected")]
     except json.JSONDecodeError as e:
         # 응답이 너무 길어서 잘린 경우 예외를 발생시키지 않고 빈 배열 반환으로 우회 (부분 실패 허용)
         try:
             # 어떻게든 복원 시도 (잘린 JSON의 괄호를 강제로 닫음)
             force_closed = cleaned + '"}]}' if cleaned.endswith('"') else cleaned + '}]}'
-            return json.loads(force_closed).get("errors", [])
+            errors = json.loads(force_closed).get("errors", [])
+            return [e for e in errors if e.get("original") != e.get("corrected")]
         except Exception:
             return []  # 도저히 안되면 그냥 패스 (에러로 팝업 중단 방지)
 
@@ -202,7 +206,7 @@ def _run_batches_sequential(batches, doc, provider, api_key, progress_callback, 
         all_errors.extend(parse_errors(raw))
     return all_errors
 
-def run_ai_check(doc, progress_callback=None):
+def run_ai_check(doc, progress_callback=None, stop_event=None):
     sentences = doc.get("sentences", [])
     if not sentences:
         return []
@@ -217,10 +221,13 @@ def run_ai_check(doc, progress_callback=None):
     batches = [sentences[i:i + BATCH_SIZE] for i in range(0, len(sentences), BATCH_SIZE)]
     total_batches = len(batches)
     completed = [0]
+    progress_lock = threading.Lock()
 
     def run_batch(batch_num, batch):
         partial_doc = {**doc, "sentences": batch}
         payload = build_prompt_payload(partial_doc)
+        if stop_event and stop_event.is_set():
+            raise InterruptedError("AI check was manually stopped")
         try:
             raw = _call_provider(provider, payload, api_key)
         except Exception as e:
@@ -228,9 +235,12 @@ def run_ai_check(doc, progress_callback=None):
                 raise RateLimitError(str(e))
             raise
         errors = parse_errors(raw)
-        completed[0] += 1
+        with progress_lock:
+            completed[0] += 1
+            current = completed[0]
+            
         if progress_callback:
-            progress_callback(completed[0], total_batches)
+            progress_callback(current, total_batches)
         return batch_num, errors
 
     # 병렬 시도
@@ -240,6 +250,9 @@ def run_ai_check(doc, progress_callback=None):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(run_batch, i, batch): i for i, batch in enumerate(batches)}
         for future in as_completed(futures):
+            if stop_event and stop_event.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise InterruptedError("AI check was manually stopped")
             try:
                 batch_num, errors = future.result()
                 results[batch_num] = errors
@@ -260,12 +273,18 @@ def run_ai_check(doc, progress_callback=None):
         remaining.sort()
         time.sleep(2)  # 잠깐 대기 후 순차 재시도
         for i, batch in remaining:
+            if stop_event and stop_event.is_set():
+                raise InterruptedError("AI check was manually stopped")
             if progress_callback:
                 progress_callback(completed[0] + 1, total_batches)
             partial_doc = {**doc, "sentences": batch}
             payload = build_prompt_payload(partial_doc)
             raw = _call_provider(provider, payload, api_key)
             results[i] = parse_errors(raw)
-            completed[0] += 1
+            with progress_lock:
+                completed[0] += 1
+                current = completed[0]
+            if progress_callback:
+                progress_callback(current, total_batches)
 
     return [err for i in sorted(results) for err in results[i]]
