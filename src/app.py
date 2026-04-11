@@ -8,7 +8,7 @@ from PyQt6.QtGui import QFont, QPalette, QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QProgressBar,
-    QFileDialog, QMessageBox, QInputDialog, QSizePolicy
+    QFileDialog, QMessageBox, QInputDialog, QSizePolicy, QCheckBox, QDialog
 )
 
 # Engine modules from misspelling checker
@@ -43,7 +43,7 @@ def _load_config() -> dict:
                 return json.load(f)
         except Exception:
             pass
-    return {"provider": PROVIDER_GEMINI, "keys": {}}
+    return {"provider": PROVIDER_GEMINI, "keys": {}, "show_welcome": True}
 
 def _save_config(config: dict):
     with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -53,6 +53,90 @@ def _apply_config(config: dict):
     provider = config.get("provider", PROVIDER_GEMINI)
     os.environ["TYPO_PROVIDER"] = provider
     os.environ["TYPO_API_KEY"] = config.get("keys", {}).get(provider, "")
+
+# ────────────────────────────────────────────
+# Welcome Dialog
+# ────────────────────────────────────────────
+
+class WelcomeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("안내 및 사용 방법")
+        self.setFixedSize(500, 600)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        header = QLabel("사용 방법 안내")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #5D4037;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        
+        text = QLabel("""
+            <div style='line-height: 160%; color: #5D4037; font-family: "맑은 고딕";'>
+                <p><b>** 오타 찾기에 눈이 아픈 그대들을 위해서 만들었습니다.</b></p>
+                
+                <p><b>** 사용방법은 간단합니다.</b><br>
+                - 파일을 상단 박스 안에 drag&drop 하시면 자동으로 시작합니다.<br>
+                - 결과는 엑셀로 출력됩니다.<br>
+                - 검사 결과로서 띄어쓰기 오류가 많이 나오는 편인데 피로도를 줄이기 위해서 중요한 오타라고 생각되는 부분을 색깔로 강조 표기하였습니다.</p>
+
+                <p><b>** 보안을 위해서 유료 API를 사용하시기 바랍니다.</b><br>
+                - 무료는 AI 학습에 활용되는 경우가 많습니다.<br>
+                - OpenAI, Anthropic, Google API가 가능하며 가성비 좋은 모델을 default로 해 놓았기 때문에 토큰(비용) 소모는 크지 않습니다.<br>
+                - 갑자기 계속해서 검사 오류가 발생한다면 API 할당량 소진 여부를 확인해 보시기 바랍니다.</p>
+
+                <p><b>** AI는 실수를 합니다.</b><br>
+                - 하지만 중요한 오타는 잘 잡아내는 편이니 가끔 나오는 실수는 귀엽게 봐주시면 감사하겠습니다.<br>
+                - 사용 중 발견되는 AI의 실수나 오류를 알려주시면 업데이트하는 데 도움이 됩니다.</p>
+
+                <p><b>** 이미지 기반 PDF는 읽기가 안 되기 때문에 오류가 납니다.</b><br>
+                - 일시적인 오류가 아니므로 계속 시도해봤자 소용없습니다.<br>
+                - 저에게 개인적으로 말씀해 주시면 이미지 PDF 오타 검사 도와드릴 수 있으니 참고 바랍니다.</p>
+
+                <p><b>** AI의 실수나 오류 신고 또는 그 밖의 문의사항은 회계조사부 김성범(053-770-2627)에게 문의해 주시면 감사하겠습니다.</b></p>
+            </div>
+        """)
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        content_layout.addWidget(text)
+        scroll.setWidget(content)
+
+        self.dont_show_cb = QCheckBox("다시는 이 창을 열지 않음")
+        self.dont_show_cb.setStyleSheet("color: #8D6E63; font-size: 11px;")
+
+        btn_box = QHBoxLayout()
+        confirm_btn = QPushButton("확인")
+        confirm_btn.setObjectName("btnPrimary")
+        confirm_btn.setFixedWidth(100)
+        confirm_btn.clicked.connect(self.accept)
+        btn_box.addStretch(1)
+        btn_box.addWidget(confirm_btn)
+        btn_box.addStretch(1)
+
+        layout.addWidget(header)
+        layout.addWidget(scroll)
+        layout.addWidget(self.dont_show_cb)
+        layout.addLayout(btn_box)
+        
+        self.setLayout(layout)
+        
+        # Apply theme colors
+        self.setStyleSheet("""
+            QDialog { background-color: #FDF9F0; }
+            #btnPrimary { background: #C1A062; color: #5D4037; border: none; padding: 8px; border-radius: 8px; font-weight: bold; }
+            #btnPrimary:hover { background: #B39250; }
+        """)
 
 # ────────────────────────────────────────────
 # UI Widgets
@@ -71,6 +155,16 @@ class DropArea(QFrame):
         super().showEvent(event)
         if not getattr(self, "_api_checked", False):
             self._api_checked = True
+            
+            # Show Welcome popup if needed
+            config = _load_config()
+            if config.get("show_welcome", True):
+                dlg = WelcomeDialog(self.window())
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    if dlg.dont_show_cb.isChecked():
+                        config["show_welcome"] = False
+                        _save_config(config)
+            
             QTimer.singleShot(0, self.window()._ensure_api_key)
 
     def _build_ui(self):
@@ -202,9 +296,10 @@ class CheckWorker(QThread):
     overall_status = pyqtSignal(str)
     finished_all = pyqtSignal()
 
-    def __init__(self, items):
+    def __init__(self, items, parent_window):
         super().__init__()
         self.items = items
+        self.parent_window = parent_window
         self.cancel_event = threading.Event()
 
     def cancel(self):
@@ -258,12 +353,16 @@ class CheckWorker(QThread):
                 self.file_status.emit(item_id, f"AI 검증 중... (배치 {current_batch}/{total_batches})")
 
             try:
-                errors = run_ai_check(doc, progress_callback=progress_cb)
+                errors = run_ai_check(doc, progress_callback=progress_cb, stop_event=self.cancel_event)
+            except InterruptedError:
+                self.file_status.emit(item_id, "중단됨")
+                self.cancel_event.set() # 다른 작업도 중단하도록 설정
+                break
             except Exception as e:
                 if self.cancel_event.is_set():
                     self.file_status.emit(item_id, "중단됨")
                     break
-                self.file_status.emit(item_id, f"❌ AI 검사 오류: {e}")
+                self.file_status.emit(item_id, f"❌ 에러: {e}")
                 self.file_progress.emit(item_id, 0)
                 continue
                 
@@ -434,29 +533,37 @@ class MainWindow(QMainWindow):
     def _ensure_api_key(self):
         config = _load_config()
         provider = config.get("provider", PROVIDER_GEMINI)
-        api_key = config.get("keys", {}).get(provider, "")
+        keys = config.get("keys", {})
+        api_key = keys.get(provider, "")
 
         if api_key:
             _apply_config(config)
             return
 
-        key, ok = QInputDialog.getText(
-            self,
-            "API 키 입력",
-            "API 키를 입력해 주세요.\n(OpenAI, Anthropic, Gemini 키 모두 지원합니다.)",
-        )
-        if ok and key and key.strip():
+        while True:
+            key, ok = QInputDialog.getText(
+                self,
+                "API 키 입력",
+                "API 키를 입력해 주세요.\n(OpenAI, Anthropic, Gemini 키 모두 지원합니다.)",
+            )
+            if not ok:
+                QMessageBox.critical(self, "실행 취소", "API 키가 없어 검사를 진행할 수 없습니다.")
+                QApplication.quit()
+                return
+
             key = key.strip()
+            if not key:
+                continue
+
+            # 바로 저장
             new_provider = _detect_provider(key)
             if "keys" not in config: config["keys"] = {}
             config["provider"] = new_provider
             config["keys"][new_provider] = key
             _save_config(config)
             _apply_config(config)
-            QMessageBox.information(self, "설정 완료", f"감지된 공급자: {new_provider}\n설명이 완료되었습니다.")
-        else:
-            QMessageBox.critical(self, "실행 취소", "API 키가 없어 검사를 진행할 수 없습니다.")
-            QApplication.quit()
+            QMessageBox.information(self, "설정 완료", f"API 키가 설정되었습니다.\n공급자: {new_provider}")
+            break
 
     def _pick_files(self):
         if self.is_processing: return
@@ -507,7 +614,7 @@ class MainWindow(QMainWindow):
         self.is_processing = True
         self.all_results = []
 
-        self.worker = CheckWorker(pending)
+        self.worker = CheckWorker(pending, self) # self (MainWindow)를 parent_window로 전달
         self.worker.file_progress.connect(self._on_progress)
         self.worker.file_status.connect(self._on_status)
         self.worker.file_done.connect(self._on_done)
@@ -568,10 +675,24 @@ class MainWindow(QMainWindow):
         total_errors = 0
         for item in self.file_items:
             total_errors += len(item.get("results", []))
-        self.status_lbl.setText(f"검사 완료! 총 {total_errors}건 발견.")
-        QMessageBox.information(
-            self, "검사 완료", f"검사가 완료되었습니다.\n총 {total_errors}건 발견.\n결과 다운로드 버튼을 눌러 저장하세요."
-        )
+            
+        # [IMPROVED] Check if any item was manually or unexpectedly stopped
+        is_stopped = any(i["widget"].status.text() == "중단됨" for i in self.file_items)
+        
+        if is_stopped:
+            self.status_lbl.setText(f"중단됨. 현재까지 {total_errors}건 발견.")
+            QMessageBox.warning(
+                self, "검사 중단", 
+                f"사용자에 의해 검사가 중단되었습니다.\n"
+                f"현재까지 {total_errors}건의 오류를 발견했습니다.\n"
+                "결과 다운로드 버튼을 눌러 지금까지의 결과를 저장할 수 있습니다."
+            )
+        else:
+            self.status_lbl.setText(f"검사 완료! 총 {total_errors}건 발견.")
+            QMessageBox.information(
+                self, "검사 완료", 
+                f"검사가 완료되었습니다.\n총 {total_errors}건 발견.\n결과 다운로드 버튼을 눌러 저장하세요."
+            )
 
     def _clear_all(self):
         if self.is_processing: return

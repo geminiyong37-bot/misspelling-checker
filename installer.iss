@@ -11,6 +11,7 @@ SolidCompression=yes
 
 [Files]
 Source: "Output\_staging\MisspellingChecker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "Output\_staging\verify_key.exe"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "assets\app-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -30,6 +31,53 @@ var
 procedure OnAPIKeyChange(Sender: TObject);
 begin
   WizardForm.NextButton.Enabled := Trim(APIKeyPage.Values[0]) <> '';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  APIKey: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if CurPageID = APIKeyPage.ID then
+  begin
+    APIKey := Trim(APIKeyPage.Values[0]);
+    if APIKey <> '' then
+    begin
+      ExtractTemporaryFile('verify_key.exe');
+      WizardForm.StatusLabel.Caption := 'API 키를 검증하는 중입니다...';
+      WizardForm.StatusLabel.Visible := True;
+      WizardForm.Refresh;
+      
+      // Run verify_key.exe <api_key>
+      if Exec(ExpandConstant('{tmp}\verify_key.exe'), '"' + APIKey + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      begin
+        case ResultCode of
+          0: Result := True;
+          2: begin
+               MsgBox('유효하지 않은 API 키입니다. 다시 확인해 주세요.', mbError, MB_OK);
+               Result := False;
+             end;
+          3: begin
+               MsgBox('인터넷 연결 오류 또는 서버 응답 문제로 키를 확인할 수 없습니다.' + #13#10 + '인터넷 상태를 확인해 주세요.', mbError, MB_OK);
+               Result := False;
+             end;
+          else
+             begin
+               MsgBox('검증 중 알 수 없는 오류가 발생했습니다. (에러 코드: ' + IntToStr(ResultCode) + ')', mbError, MB_OK);
+               Result := False;
+             end;
+        end;
+      end
+      else
+      begin
+        MsgBox('검증 도구를 실행할 수 없습니다. 다시 시도해 주세요.', mbError, MB_OK);
+        Result := False;
+      end;
+      
+      WizardForm.StatusLabel.Visible := False;
+    end;
+  end;
 end;
 
 procedure InitializeWizard;

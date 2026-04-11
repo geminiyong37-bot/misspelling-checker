@@ -92,16 +92,39 @@ def build_prompt_payload(doc):
     system = SYSTEM_PROMPT
     rag_section = build_rag_prompt_section()
     user = build_user_prompt(doc)
-    
-    # 시스템 프롬프트에 RAG 지침 추가
     full_system = f"{system}\n{rag_section}" if rag_section else system
-    
     combined = f"{full_system}\n\n{user}"
     return {
         "system": full_system,
         "user": user,
         "combined": combined
     }
+
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+
+_session = None
+_session_lock = threading.Lock()
+
+def get_session():
+    global _session
+    with _session_lock:
+        if _session is None:
+            _session = requests.Session()
+            retries = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=None
+            )
+            adapter = HTTPAdapter(
+                pool_connections=20, 
+                pool_maxsize=20, 
+                max_retries=retries
+            )
+            _session.mount("https://", adapter)
+            _session.mount("http://", adapter)
+    return _session
 
 def call_gemini(prompt_text, api_key, model=MODEL_MAP[PROVIDER_GEMINI]):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -114,7 +137,8 @@ def call_gemini(prompt_text, api_key, model=MODEL_MAP[PROVIDER_GEMINI]):
             "topK": 1
         }
     }
-    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=60)
+    session = get_session()
+    response = session.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=60)
     if response.status_code != 200:
         raise Exception(f"Gemini request failed ({response.status_code}): {response.text}")
     data = response.json()
@@ -134,7 +158,8 @@ def call_openai(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_OPEN
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
-    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
+    session = get_session()
+    response = session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
         raise Exception(f"OpenAI request failed ({response.status_code}): {response.text}")
     return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -152,7 +177,8 @@ def call_anthropic(system_prompt, user_text, api_key, model=MODEL_MAP[PROVIDER_A
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_text}],
     }
-    response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=60)
+    session = get_session()
+    response = session.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
         raise Exception(f"Anthropic request failed ({response.status_code}): {response.text}")
     return response.json().get("content", [{}])[0].get("text", "")
@@ -164,20 +190,17 @@ def parse_errors(response_text):
     try:
         parsed = json.loads(cleaned)
         errors = parsed.get("errors", []) if isinstance(parsed.get("errors"), list) else []
-        # [IMPROVED] 수정 전후가 같은 노이즈 필터링
         return [e for e in errors if e.get("original") != e.get("corrected")]
-    except json.JSONDecodeError as e:
-        # 응답이 너무 길어서 잘린 경우 예외를 발생시키지 않고 빈 배열 반환으로 우회 (부분 실패 허용)
+    except json.JSONDecodeError:
         try:
-            # 어떻게든 복원 시도 (잘린 JSON의 괄호를 강제로 닫음)
             force_closed = cleaned + '"}]}' if cleaned.endswith('"') else cleaned + '}]}'
             errors = json.loads(force_closed).get("errors", [])
             return [e for e in errors if e.get("original") != e.get("corrected")]
         except Exception:
-            return []  # 도저히 안되면 그냥 패스 (에러로 팝업 중단 방지)
+            return []
 
-BATCH_SIZE = 50  # 사용자 요청으로 50으로 롤백
-MAX_WORKERS = 3
+BATCH_SIZE = 50
+MAX_WORKERS = 5
 
 class RateLimitError(Exception):
     pass
@@ -192,19 +215,7 @@ def _call_provider(provider, payload, api_key):
     return raw
 
 def _is_rate_limit_error(e):
-    return "429" in str(e)
-
-def _run_batches_sequential(batches, doc, provider, api_key, progress_callback, total_batches, start_batch_num=1):
-    all_errors = []
-    for idx, batch in enumerate(batches):
-        batch_num = start_batch_num + idx
-        if progress_callback:
-            progress_callback(batch_num, total_batches)
-        partial_doc = {**doc, "sentences": batch}
-        payload = build_prompt_payload(partial_doc)
-        raw = _call_provider(provider, payload, api_key)
-        all_errors.extend(parse_errors(raw))
-    return all_errors
+    return "429" in str(e) or "rate_limit" in str(e).lower()
 
 def run_ai_check(doc, progress_callback=None, stop_event=None):
     sentences = doc.get("sentences", [])
@@ -216,7 +227,7 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
     if not api_key:
         api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("API key is missing. Please set it in the application settings.")
+        raise ValueError("API key is missing.")
 
     batches = [sentences[i:i + BATCH_SIZE] for i in range(0, len(sentences), BATCH_SIZE)]
     total_batches = len(batches)
@@ -227,7 +238,7 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         partial_doc = {**doc, "sentences": batch}
         payload = build_prompt_payload(partial_doc)
         if stop_event and stop_event.is_set():
-            raise InterruptedError("AI check was manually stopped")
+            raise InterruptedError("Stopped")
         try:
             raw = _call_provider(provider, payload, api_key)
         except Exception as e:
@@ -238,12 +249,10 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         with progress_lock:
             completed[0] += 1
             current = completed[0]
-            
         if progress_callback:
             progress_callback(current, total_batches)
         return batch_num, errors
 
-    # 병렬 시도
     results = {}
     rate_limited_from = None
 
@@ -252,39 +261,66 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         for future in as_completed(futures):
             if stop_event and stop_event.is_set():
                 executor.shutdown(wait=False, cancel_futures=True)
-                raise InterruptedError("AI check was manually stopped")
+                raise InterruptedError("Stopped")
             try:
                 batch_num, errors = future.result()
                 results[batch_num] = errors
             except RateLimitError:
-                # 429 발생 — 나머지 배치 인덱스 파악 후 순차 처리로 전환
-                rate_limited_from = min(
-                    idx for idx, f in futures.items() if f not in [ff for ff in results]
-                    if idx not in results
-                ) if any(idx not in results for idx in futures.values()) else None
-                # 실행 중인 future 취소 (이미 시작된 건 못 막음)
-                for f in futures:
-                    f.cancel()
+                rate_limited_from = min(i for i in range(len(batches)) if i not in results)
+                for f in futures: f.cancel()
                 break
 
-    # 429 폴백: 아직 처리 안 된 배치 순차 처리
     if rate_limited_from is not None:
         remaining = [(i, batches[i]) for i in range(len(batches)) if i not in results]
         remaining.sort()
-        time.sleep(2)  # 잠깐 대기 후 순차 재시도
+        time.sleep(2)
         for i, batch in remaining:
             if stop_event and stop_event.is_set():
-                raise InterruptedError("AI check was manually stopped")
-            if progress_callback:
-                progress_callback(completed[0] + 1, total_batches)
+                raise InterruptedError("Stopped")
             partial_doc = {**doc, "sentences": batch}
             payload = build_prompt_payload(partial_doc)
-            raw = _call_provider(provider, payload, api_key)
-            results[i] = parse_errors(raw)
-            with progress_lock:
-                completed[0] += 1
-                current = completed[0]
-            if progress_callback:
-                progress_callback(current, total_batches)
+            try:
+                raw = _call_provider(provider, payload, api_key)
+                results[i] = parse_errors(raw)
+                with progress_lock:
+                    completed[0] += 1
+                if progress_callback:
+                    progress_callback(completed[0], total_batches)
+            except Exception:
+                results[i] = []
 
     return [err for i in sorted(results) for err in results[i]]
+
+def detect_provider(api_key):
+    if api_key.startswith("sk-ant-"):
+        return PROVIDER_ANTHROPIC
+    elif api_key.startswith("sk-"):
+        return PROVIDER_OPENAI
+    else:
+        return PROVIDER_GEMINI
+
+def validate_api_key(api_key, provider=None):
+    if not provider:
+        provider = detect_provider(api_key)
+    
+    test_payload = {"sentences": [{"text": "안녕", "pageNumber": 1}]}
+    payload = build_prompt_payload(test_payload)
+    
+    try:
+        if provider == PROVIDER_OPENAI:
+            call_openai(payload["system"], payload["user"], api_key)
+        elif provider == PROVIDER_ANTHROPIC:
+            call_anthropic(payload["system"], payload["user"], api_key)
+        else:
+            call_gemini(payload["combined"], api_key)
+        return True, "Success"
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "invalid_api_key" in error_msg.lower() or "API_KEY_INVALID" in error_msg:
+            return False, "유효하지 않은 API 키입니다."
+        elif "429" in error_msg or "rate_limit" in error_msg.lower():
+            return False, "전송률 제한(Rate Limit)에 도달했습니다. 잠시 후 다시 시도해 주세요."
+        elif "403" in error_msg or "permission_denied" in error_msg.lower():
+            return False, "API 키 권한이 없거나 할당량이 부족합니다."
+        else:
+            return False, f"연결 오류: {error_msg}"

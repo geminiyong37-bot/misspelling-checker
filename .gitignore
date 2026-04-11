@@ -4,3 +4,8 @@ node_modules/
 *.json
 *.xlsx
 __pycache__/
+Output/
+build/
+dist/
+*.spec
+verify_key.exe
