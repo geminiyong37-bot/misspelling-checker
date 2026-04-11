@@ -45,7 +45,7 @@ begin
     if APIKey <> '' then
     begin
       ExtractTemporaryFile('verify_key.exe');
-      WizardForm.StatusLabel.Caption := 'API 키를 검증하는 중입니다...';
+      WizardForm.StatusLabel.Caption := '네트워크를 통해 API 키를 검증하는 중입니다. 잠시만 기다려 주세요...';
       WizardForm.StatusLabel.Visible := True;
       WizardForm.Refresh;
       
@@ -83,7 +83,9 @@ end;
 procedure InitializeWizard;
 begin
   APIKeyPage := CreateInputQueryPage(wpWelcome,
-    'API 키 설정', 'Gemini (gemini-2.5-flash), OpenAI (gpt-4o-mini) 또는 Anthropic (claude-haiku) API 중 하나를 입력해 주세요.',
+    'API 키 설정', 
+    'Gemini, OpenAI, Anthropic API 키 중 하나를 입력해 주세요.' + #13#10 +
+    'Next 버튼을 누르면 유효성 검증을 위해 인터넷 연결이 필요하며 수 초 정도 소요될 수 있습니다.',
     'API 키를 입력해 주세요.');
   APIKeyPage.Add('API 키:', False);
   APIKeyPage.Edits[0].OnChange := @OnAPIKeyChange;

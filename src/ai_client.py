@@ -254,8 +254,6 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         return batch_num, errors
 
     results = {}
-    rate_limited_from = None
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(run_batch, i, batch): i for i, batch in enumerate(batches)}
         for future in as_completed(futures):
@@ -265,29 +263,9 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
             try:
                 batch_num, errors = future.result()
                 results[batch_num] = errors
-            except RateLimitError:
-                rate_limited_from = min(i for i in range(len(batches)) if i not in results)
-                for f in futures: f.cancel()
-                break
-
-    if rate_limited_from is not None:
-        remaining = [(i, batches[i]) for i in range(len(batches)) if i not in results]
-        remaining.sort()
-        time.sleep(2)
-        for i, batch in remaining:
-            if stop_event and stop_event.is_set():
-                raise InterruptedError("Stopped")
-            partial_doc = {**doc, "sentences": batch}
-            payload = build_prompt_payload(partial_doc)
-            try:
-                raw = _call_provider(provider, payload, api_key)
-                results[i] = parse_errors(raw)
-                with progress_lock:
-                    completed[0] += 1
-                if progress_callback:
-                    progress_callback(completed[0], total_batches)
             except Exception:
-                results[i] = []
+                # 개별 배치 오류 시 해당 배치는 빈 결과로 처리 (이미 5회 재시도 실패 상황)
+                pass
 
     return [err for i in sorted(results) for err in results[i]]
 
