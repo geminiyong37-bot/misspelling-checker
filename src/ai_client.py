@@ -112,8 +112,8 @@ def get_session():
         if _session is None:
             _session = requests.Session()
             retries = Retry(
-                total=3,
-                backoff_factor=1,
+                total=10, # Increased from 3
+                backoff_factor=2, # Increased from 1
                 status_forcelist=[429, 500, 502, 503, 504],
                 allowed_methods=None
             )
@@ -239,6 +239,12 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         payload = build_prompt_payload(partial_doc)
         if stop_event and stop_event.is_set():
             raise InterruptedError("Stopped")
+            
+        # Add slight jitter to prevent simultaneous burst (Rate Limit 429)
+        import time
+        import random
+        time.sleep(random.uniform(0.1, 0.5))
+        
         try:
             raw = _call_provider(provider, payload, api_key)
         except Exception as e:

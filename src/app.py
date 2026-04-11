@@ -362,7 +362,16 @@ class CheckWorker(QThread):
                 if self.cancel_event.is_set():
                     self.file_status.emit(item_id, "중단됨")
                     break
-                self.file_status.emit(item_id, f"❌ 에러: {e}")
+                
+                err_str = str(e)
+                if "429" in err_str or "RateLimit" in err_str:
+                    msg = "AI 속도 제한 (잠시 후 다시 시도해 주세요)"
+                elif "timeout" in err_str.lower():
+                    msg = "네트워크 시간 초과 (인터넷 연결 확인)"
+                else:
+                    msg = f"에러: {err_str}"
+                    
+                self.file_status.emit(item_id, f"❌ {msg}")
                 self.file_progress.emit(item_id, 0)
                 continue
                 

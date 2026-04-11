@@ -57,7 +57,17 @@ def parse_with_kordoc(file_path):
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', check=True)
-        return json.loads(result.stdout)
+        stdout = result.stdout
+        
+        # Extract JSON part (in case kordoc prints progress to stdout)
+        start_idx = stdout.find('{')
+        end_idx = stdout.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+            json_str = stdout[start_idx:end_idx + 1]
+            return json.loads(json_str)
+        else:
+            return json.loads(stdout) # Fallback to original
     except subprocess.CalledProcessError as e:
         # kordoc might exit with error for unsupported formats like .doc
         error_msg = e.stderr or e.stdout
