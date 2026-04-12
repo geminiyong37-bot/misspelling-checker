@@ -10,7 +10,7 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "Output\_staging\MisspellingChecker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "Output\_staging\MisspellingChecker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "node_modules\typescript\*, node_modules\tsup\*, node_modules\tsx\*, *.map, *.md, demo.gif, LICENSE, NOTICE"
 Source: "Output\_staging\verify_key.exe"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "assets\app-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -84,9 +84,10 @@ procedure InitializeWizard;
 begin
   APIKeyPage := CreateInputQueryPage(wpWelcome,
     'API 키 설정', 
+    '',
+    'API 키를 입력해 주세요.' + #13#10#13#10 +
     'Gemini, OpenAI, Anthropic API 키 중 하나를 입력해 주세요.' + #13#10 +
-    'Next 버튼을 누르면 유효성 검증을 위해 인터넷 연결이 필요하며 수 초 정도 소요될 수 있습니다.',
-    'API 키를 입력해 주세요.');
+    'Next 버튼을 누르면 유효성 검증을 위해 인터넷 연결이 필요하며 수 초 정도 소요될 수 있습니다.' + #13#10#13#10);
   APIKeyPage.Add('API 키:', False);
   APIKeyPage.Edits[0].OnChange := @OnAPIKeyChange;
 end;

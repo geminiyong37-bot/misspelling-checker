@@ -2,6 +2,19 @@ import os
 import sys
 import threading
 import json
+import traceback
+import datetime
+
+_LOG_FILE = os.path.expanduser("~/.misspelling_checker_app_log.txt")
+
+def log_debug(msg):
+    try:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] {msg}\n")
+    except:
+        pass
+log_debug("--- Logger Initialized ---")
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QTimer
 from PyQt6.QtGui import QFont, QPalette, QColor, QIcon
@@ -158,12 +171,18 @@ class DropArea(QFrame):
             
             # Show Welcome popup if needed
             config = _load_config()
+            log_debug(f"Config loaded: show_welcome={config.get('show_welcome')}")
             if config.get("show_welcome", True):
+                log_debug("Showing WelcomeDialog...")
                 dlg = WelcomeDialog(self.window())
                 if dlg.exec() == QDialog.DialogCode.Accepted:
+                    log_debug("WelcomeDialog accepted.")
                     if dlg.dont_show_cb.isChecked():
+                        log_debug("User checked 'Don't show again'.")
                         config["show_welcome"] = False
                         _save_config(config)
+                else:
+                    log_debug("WelcomeDialog rejected/closed.")
             
             QTimer.singleShot(0, self.window()._ensure_api_key)
 
@@ -313,6 +332,7 @@ class CheckWorker(QThread):
                 
             item_id = item["id"]
             file_path = item["path"]
+            log_debug(f"Worker start analysis: {item['name']} (path: {file_path})")
 
             self.file_status.emit(item_id, "문서 파싱 중... (kordoc)")
             self.file_progress.emit(item_id, 10)
@@ -320,18 +340,22 @@ class CheckWorker(QThread):
 
             try:
                 # 1. 문서 파싱
+                log_debug(f"[{item['name']}] Parsing with kordoc...")
                 raw_result = parse_with_kordoc(file_path)
                 if not raw_result:
+                    log_debug(f"[{item['name']}] KORDOC parsing failed (empty result).")
                     self.file_status.emit(item_id, "❌ KORDOC 파싱 실패")
                     self.file_progress.emit(item_id, 0)
                     continue
 
                 # 2. 문서 모델 생성
+                log_debug(f"[{item['name']}] Building document model...")
                 self.file_status.emit(item_id, "문서 모델 생성 중...")
                 self.file_progress.emit(item_id, 20)
                 doc = build_doc_from_parse_result(raw_result, file_path)
 
                 if not doc.get("sentences"):
+                    log_debug(f"[{item['name']}] No sentences found to check.")
                     self.file_status.emit(item_id, "완료 (검사할 문장이 없습니다)")
                     self.file_progress.emit(item_id, 100)
                     continue
@@ -353,8 +377,11 @@ class CheckWorker(QThread):
                 self.file_status.emit(item_id, f"AI 검증 중... (배치 {current_batch}/{total_batches})")
 
             try:
+                log_debug(f"[{item['name']}] AI analysis started (Sentences: {len(doc.get('sentences', []))})")
                 errors = run_ai_check(doc, progress_callback=progress_cb, stop_event=self.cancel_event)
+                log_debug(f"[{item['name']}] AI analysis finished. Errors found: {len(errors)}")
             except InterruptedError:
+                log_debug(f"[{item['name']}] Analysis interrupted by user.")
                 self.file_status.emit(item_id, "중단됨")
                 self.cancel_event.set() # 다른 작업도 중단하도록 설정
                 break
@@ -546,9 +573,11 @@ class MainWindow(QMainWindow):
         api_key = keys.get(provider, "")
 
         if api_key:
+            log_debug(f"API key found in config. Provider: {provider}")
             _apply_config(config)
             return
 
+        log_debug("API key missing. Showing QInputDialog...")
         while True:
             key, ok = QInputDialog.getText(
                 self,
@@ -597,6 +626,7 @@ class MainWindow(QMainWindow):
             elif p.lower().endswith(SUPPORTED_EXT):
                 if self._add_file(p): added += 1
         if added:
+            log_debug(f"Total {added} files added. Starting auto-check.")
             self.status_lbl.setText(f"{added}개 파일 추가됨. 자동 검사를 시작합니다...")
             self._start_checking()
 
@@ -635,6 +665,7 @@ class MainWindow(QMainWindow):
 
     def _stop_checking(self):
         if not self.is_processing: return
+        log_debug("User clicked Stop button.")
         if hasattr(self, "worker"):
             self.worker.cancel()
         self.status_lbl.setText("강제 중단 중...")
@@ -739,17 +770,36 @@ class MainWindow(QMainWindow):
             return
             
         try:
+            log_debug(f"Exporting results to: {save_path}")
             # excel_exporter.py 의 export_to_excel 사용 (버그 수정)
             export_to_excel(all_results, save_path)
+            log_debug("Excel export successful.")
             QMessageBox.information(self, "저장 완료", f"저장되었습니다.\n{save_path}")
         except Exception as e:
+            log_debug(f"Excel export failed: {e}")
             QMessageBox.critical(self, "저장 오류", str(e))
 
 def main():
-    app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
-    sys.exit(app.exec())
+    try:
+        log_debug("App starting...")
+        app = QApplication(sys.argv)
+        log_debug("QApplication created.")
+        w = MainWindow()
+        log_debug("MainWindow initialized.")
+        w.show()
+        log_debug("MainWindow shown.")
+        sys.exit(app.exec())
+    except Exception as e:
+        err_msg = traceback.format_exc()
+        log_debug(f"CRITICAL ERROR:\n{err_msg}")
+        # 만약 QApplication이 이미 있다면 메시지 박스를 시도해봄
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            if QApplication.instance():
+                QMessageBox.critical(None, "Fatal Error", f"App failed to start:\n{e}\n\nCheck log: {_LOG_FILE}")
+        except:
+            pass
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
