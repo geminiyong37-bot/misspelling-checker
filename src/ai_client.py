@@ -17,23 +17,23 @@ MODEL_MAP = {
     PROVIDER_ANTHROPIC: "claude-haiku-4-5-20251001"
 }
 
-SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 공문서 작성 전문가입니다.
+SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법 및 오타 교정 전문가입니다.
 오직 다음 항목만 찾아주시고, 반드시 순수 JSON(errors 배열)만 출력하세요.
 
 [오타 검출 규칙]
 1. 단순 맞춤법/철자 오류 (예: '됬다' → '됐다', '않습니다' → '안 합니다')
-2. 띄어쓰기 오류 (예: '국민은행입구' → '국민은행 입구')
-3. 개조식/표 안에서 문맥상 명백한 오타 (예: '예산잔액' vs '예산 잔액')
+2. 문맥상 명백한 오타 (예: '보고서 작성함' → '보고서 작성함' (O), '보고서 작서함' → '보고서 작성함' (X))
 
 [출력 데이터 작성 주의사항]
-- 사용자가 오타를 쉽게 검색할 수 있도록, 짧은 숫자나 단어 하나('03.' 등)만 적지 말고 문맥이 드러나는 어절 단위나 연월일 전체('2024. 03.' 등)를 original과 corrected에 포함하세요.
+- **띄어쓰기 오류는 절대 지적하지 마세요.** 단어가 붙어 있든 떨어져 있든 의미가 통하면 정상으로 간주합니다.
+- original과 corrected는 오타가 포함된 단어(어절) 위주로 최대한 짧고 명확하게 작성하세요. 주변 문맥을 길게 포함하지 마세요.
 
-[반드시 제외할 항목]
-- 연도 표기 시 ' ('24년, '25년 등) 표현은 정상적인 줄임표 표현이므로 수정하지 마세요.
+[반드시 제외할 항목 (예외 처리)]
+- 연도 표기 시 따옴표(' 또는 ’ 또는 ‘)를 사용한 줄임 표현('24년, ’25년 등)은 정상적인 표현이므로 절대 오타로 지적하거나 수정하지 마세요.
 - 개조식 문단(□, ○, -, · 등)은 현재 상태 그대로 놔두세요. 마침표(.)가 없는 것도 정상입니다.
 - 개조식 문장 끝에 마침표(.)가 누락된 것은 오타나 문법 오류로 간주하지 마세요.
 - 문장 끝이 '바람', '함', '임', '음' 등으로 끝나는 개조식 종결 어미를 '바랍니다', '합니다' 등 서술식으로 바꾸는 제안은 절대 하지 마세요. (예: '실시하기 바람' → '실시해 주시기 바랍니다' 제안 금지)
-- 문체나 어감 변경을 위한 제안(예: "권위적인 표현을 정중한 표현으로 변경")은 절대 하지 마세요. 오직 명백한 맞춤법/띄어쓰기 오류만 지적하세요.
+- 문체나 어감 변경을 위한 제안(예: "권위적인 표현을 정중한 표현으로 변경")은 절대 하지 마세요. 오직 명백한 맞춤법/철자 오류만 지적하세요.
 - 문장 완성 제안 금지: 구문이 끊기거나 미완성된 채로 끝나더라도, 뒤에 내용을 덧붙이거나 서술형으로 완성하라는 제안은 절대 하지 마세요.
 - HTML 엔티티(&#숫자;, &lt; 등)는 깨진 문자열로 간주하지 않고 무시하세요.
 - 고유명사/기관명/법령명은 수정하지 마세요.
@@ -55,13 +55,14 @@ SYSTEM_PROMPT = """당신은 대한민국 최고의 맞춤법, 띄어쓰기 및 
     {
       "page": 1,
       "sentence": "오류가 포함된 전체 문장",
-      "original": "수정 전 오류 표현 (검색이 용이하도록 주변 단어 포함)",
+      "original": "수정 전 오류 표현 (최대한 짧게 해당 단어만)",
       "corrected": "수정 후 올바른 표현",
       "reason": "오류 이유 설명",
-      "errorType": "spelling | spacing | grammar"
+      "errorType": "spelling | grammar"
     }
   ]
 }
+
 오류가 없으면 {"errors": []} 을 반환하세요.
 """
 
@@ -76,7 +77,7 @@ def build_user_prompt(doc):
     list_section = "\n".join(lines) if lines else "검사할 문장이 없습니다."
     title = (doc.get("metadata") or {}).get("title") or os.path.basename(doc.get("file", "문서"))
     
-    return f"[문서 제목] {title}\n[출처 파일] {doc.get('file', '알 수 없음')}\n[문장 리스트]\n{list_section}\n\n[요청 사항]\n- 공문서 표기는 그대로 유지하고, 오타나 맞춤법 오류만 지적하세요.\n- 각 문장은 meta 정보를 참고해서 의도된 표현인지 판단해 주세요.\n- function result는 아래 JSON schema에 맞춰서 errors 배열만 반환하세요.\n"
+    return f"[문서 제목] {title}\n[출처 파일] {doc.get('file', '알 수 없음')}\n[문장 리스트]\n{list_section}\n\n[요청 사항]\n- 공문서 표기는 그대로 유지하고, 명백한 오타만 지적하세요.\n- 어색함을 사유로 한 문체 변경 제안은 절대 하지 마세요.\n- function result는 아래 JSON schema에 맞춰서 errors 배열만 반환하세요.\n"
 
 def sanitize_response_text(text):
     cleaned = (text or "").strip()
@@ -112,8 +113,8 @@ def get_session():
         if _session is None:
             _session = requests.Session()
             retries = Retry(
-                total=10, # Increased from 3
-                backoff_factor=2, # Increased from 1
+                total=10,
+                backoff_factor=2,
                 status_forcelist=[429, 500, 502, 503, 504],
                 allowed_methods=None
             )
@@ -240,7 +241,6 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
         if stop_event and stop_event.is_set():
             raise InterruptedError("Stopped")
             
-        # Add slight jitter to prevent simultaneous burst (Rate Limit 429)
         import time
         import random
         time.sleep(random.uniform(0.1, 0.5))
@@ -270,7 +270,6 @@ def run_ai_check(doc, progress_callback=None, stop_event=None):
                 batch_num, errors = future.result()
                 results[batch_num] = errors
             except Exception:
-                # 개별 배치 오류 시 해당 배치는 빈 결과로 처리 (이미 5회 재시도 실패 상황)
                 pass
 
     return [err for i in sorted(results) for err in results[i]]

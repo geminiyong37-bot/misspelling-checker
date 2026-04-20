@@ -166,25 +166,7 @@ class DropArea(QFrame):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not getattr(self, "_api_checked", False):
-            self._api_checked = True
-            
-            # Show Welcome popup if needed
-            config = _load_config()
-            log_debug(f"Config loaded: show_welcome={config.get('show_welcome')}")
-            if config.get("show_welcome", True):
-                log_debug("Showing WelcomeDialog...")
-                dlg = WelcomeDialog(self.window())
-                if dlg.exec() == QDialog.DialogCode.Accepted:
-                    log_debug("WelcomeDialog accepted.")
-                    if dlg.dont_show_cb.isChecked():
-                        log_debug("User checked 'Don't show again'.")
-                        config["show_welcome"] = False
-                        _save_config(config)
-                else:
-                    log_debug("WelcomeDialog rejected/closed.")
-            
-            QTimer.singleShot(0, self.window()._ensure_api_key)
+        log_debug("DropArea showEvent triggered.")
 
     def _build_ui(self):
         layout = QVBoxLayout()
@@ -433,7 +415,10 @@ class MainWindow(QMainWindow):
         self.file_items = []
         self.is_processing = False
         self.all_results = []
-        self._api_checked = False
+        self._setup_done = False
+        
+        # Trigger initial setup after window is shown
+        QTimer.singleShot(200, self._initial_setup)
 
     def _build_ui(self):
         central = QWidget()
@@ -566,7 +551,38 @@ class MainWindow(QMainWindow):
             #btnDanger:pressed { background: #922608; }
         """)
 
+    def _initial_setup(self):
+        if self._setup_done: return
+        self._setup_done = True
+        log_debug("Starting initial_setup...")
+
+        # 1. API Key Check
+        self._ensure_api_key()
+        
+        # 2. Show Welcome popup if needed
+        config = _load_config()
+        show_welcome = config.get("show_welcome")
+        # Handle the case where show_welcome might be None (from installer json)
+        if show_welcome is None: 
+            show_welcome = True
+            
+        log_debug(f"Config for welcome: show_welcome={show_welcome}")
+        if show_welcome:
+            log_debug("Showing WelcomeDialog...")
+            dlg = WelcomeDialog(self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                log_debug("WelcomeDialog accepted.")
+                if dlg.dont_show_cb.isChecked():
+                    log_debug("User checked 'Don't show again'.")
+                    config["show_welcome"] = False
+                    _save_config(config)
+            else:
+                log_debug("WelcomeDialog rejected/closed.")
+        
+        log_debug("initial_setup finished. App ready.")
+
     def _ensure_api_key(self):
+        log_debug("Checking API key...")
         config = _load_config()
         provider = config.get("provider", PROVIDER_GEMINI)
         keys = config.get("keys", {})
@@ -578,30 +594,29 @@ class MainWindow(QMainWindow):
             return
 
         log_debug("API key missing. Showing QInputDialog...")
-        while True:
-            key, ok = QInputDialog.getText(
-                self,
-                "API 키 입력",
-                "API 키를 입력해 주세요.\n(OpenAI, Anthropic, Gemini 키 모두 지원합니다.)",
-            )
-            if not ok:
-                QMessageBox.critical(self, "실행 취소", "API 키가 없어 검사를 진행할 수 없습니다.")
-                QApplication.quit()
-                return
+        # (Rest of the logic remains same, but I'll make sure it doesn't block infinitely or hidden)
+        key, ok = QInputDialog.getText(
+            self,
+            "API 키 입력",
+            "프로그램 사용을 위해 API 키(OpenAI, Anthropic, Gemini 등)를 입력해 주세요.",
+            text=api_key
+        )
+        if not ok or not key.strip():
+            log_debug("User cancelled API key input.")
+            QMessageBox.warning(self, "알림", "API 키가 설정되지 않아 기능이 제한될 수 있습니다.")
+            return
 
-            key = key.strip()
-            if not key:
-                continue
-
-            # 바로 저장
-            new_provider = _detect_provider(key)
-            if "keys" not in config: config["keys"] = {}
-            config["provider"] = new_provider
-            config["keys"][new_provider] = key
-            _save_config(config)
-            _apply_config(config)
-            QMessageBox.information(self, "설정 완료", f"API 키가 설정되었습니다.\n공급자: {new_provider}")
-            break
+        key = key.strip()
+        new_provider = _detect_provider(key)
+        if "keys" not in config: config["keys"] = {}
+        config["provider"] = new_provider
+        config["keys"][new_provider] = key
+        _save_config(config)
+        _apply_config(config)
+        log_debug(f"API key manually set. Provider: {new_provider}")
+        # QMessageBox.information(self, "설정 완료", f"API 키가 설정되었습니다.\n공급자: {new_provider}")
+        self.status_lbl.setText("API 키 유효성 검사 중...")
+        QApplication.processEvents()
 
     def _pick_files(self):
         if self.is_processing: return
@@ -729,10 +744,15 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_lbl.setText(f"검사 완료! 총 {total_errors}건 발견.")
-            QMessageBox.information(
-                self, "검사 완료", 
-                f"검사가 완료되었습니다.\n총 {total_errors}건 발견.\n결과 다운로드 버튼을 눌러 저장하세요."
-            )
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("검사 완료")
+            msg_box.setText(f"검사가 완료되었습니다.\n총 {total_errors}건 발견.\n결과 다운로드 버튼을 눌러 저장하세요.")
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            download_btn = msg_box.addButton("결과 다운로드", QMessageBox.ButtonRole.AcceptRole)
+            msg_box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+            msg_box.exec()
+            if msg_box.clickedButton() == download_btn:
+                self._save_results()
 
     def _clear_all(self):
         if self.is_processing: return

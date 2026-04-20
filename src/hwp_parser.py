@@ -12,8 +12,11 @@ def resource_path(relative):
 # 개발 환경에서는 상위 레벨의 kordoc을 바로 참조하고, 빌드된 환경에서는 복사된 _MEIPASS 내의 kordoc 참조
 if hasattr(sys, '_MEIPASS'):
     KORDOC_PATH = resource_path(os.path.join("kordoc", "dist", "cli.js"))
+    # 빌드된 환경(frozen)에서는 세트로 묶인 node.exe 사용
+    NODE_EXE_PATH = resource_path(os.path.join("bin", "node.exe"))
 else:
     KORDOC_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "kordoc", "dist", "cli.js"))
+    NODE_EXE_PATH = "node" # 개발 환경에서는 전역 node 사용
 
 
 def parse_with_kordoc(file_path):
@@ -53,7 +56,7 @@ def parse_with_kordoc(file_path):
 
     # 2. kordoc CLI handling (HWP, HWPX, PDF, DOCX)
     # command: node C:\Antigravity\kordoc\dist\cli.js <file> --format json
-    cmd = ["node", KORDOC_PATH, abs_path, "--format", "json"]
+    cmd = [NODE_EXE_PATH, KORDOC_PATH, abs_path, "--format", "json"]
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', check=True)

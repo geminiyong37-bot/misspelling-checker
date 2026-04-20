@@ -12,6 +12,7 @@ a = Analysis(
         ('../kordoc/package.json', 'kordoc'),
         ('docs/공문서_지침_압축.txt', 'docs'),
         ('assets/app-icon.png', 'assets'),
+        ('bin/node.exe', 'bin'),
     ],
     hiddenimports=['requests', 'openpyxl', 'PyQt6'],
     hookspath=[],

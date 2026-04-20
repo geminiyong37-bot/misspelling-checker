@@ -3,6 +3,7 @@ AppName=AI 문서 맞춤법 검사기
 AppVersion=2.0.0
 DefaultDirName={autopf}\AI_Word_Speller
 DefaultGroupName=AI 문서 맞춤법 검사기
+OutputDir=Output
 OutputBaseFilename=AI_Word_Speller_Setup
 SetupIconFile=assets\app-icon.ico
 UninstallDisplayIcon={app}\MisspellingChecker.exe
@@ -27,6 +28,7 @@ Filename: "{app}\MisspellingChecker.exe"; Description: "{cm:LaunchProgram,AI 문
 [Code]
 var
   APIKeyPage: TInputQueryWizardPage;
+  ValidationLabel: TLabel;
 
 procedure OnAPIKeyChange(Sender: TObject);
 begin
@@ -45,8 +47,10 @@ begin
     if APIKey <> '' then
     begin
       ExtractTemporaryFile('verify_key.exe');
-      WizardForm.StatusLabel.Caption := '네트워크를 통해 API 키를 검증하는 중입니다. 잠시만 기다려 주세요...';
-      WizardForm.StatusLabel.Visible := True;
+      ValidationLabel.Visible := True;
+      ValidationLabel.Caption := 'API 키 유효성 검사 중. 잠시만 기다려 주세요...';
+      WizardForm.Refresh;
+      Sleep(100); // 윈도우 이벤트 큐가 처리될 수 있도록 아주 잠깐 대기
       WizardForm.Refresh;
       
       // Run verify_key.exe <api_key>
@@ -75,7 +79,7 @@ begin
         Result := False;
       end;
       
-      WizardForm.StatusLabel.Visible := False;
+      ValidationLabel.Visible := False;
     end;
   end;
 end;
@@ -86,10 +90,19 @@ begin
     'API 키 설정', 
     '',
     'API 키를 입력해 주세요.' + #13#10#13#10 +
-    'Gemini, OpenAI, Anthropic API 키 중 하나를 입력해 주세요.' + #13#10 +
-    'Next 버튼을 누르면 유효성 검증을 위해 인터넷 연결이 필요하며 수 초 정도 소요될 수 있습니다.' + #13#10#13#10);
+    '- Gemini, OpenAI, Anthropic API 키 중 하나를 입력해 주세요.' + #13#10 +
+    '- Next 버튼을 누르면 유효성 검증을 위해 인터넷 연결이 필요하며 수 초 정도 소요될 수 있습니다.' + #13#10#13#10);
   APIKeyPage.Add('API 키:', False);
   APIKeyPage.Edits[0].OnChange := @OnAPIKeyChange;
+
+  ValidationLabel := TLabel.Create(WizardForm);
+  ValidationLabel.Parent := APIKeyPage.Surface;
+  ValidationLabel.Caption := '';
+  ValidationLabel.Top := APIKeyPage.Edits[0].Top + APIKeyPage.Edits[0].Height + 15;
+  ValidationLabel.Left := APIKeyPage.Edits[0].Left;
+  ValidationLabel.Width := APIKeyPage.SurfaceWidth - (ValidationLabel.Left * 2);
+  ValidationLabel.Font.Color := clBlue;
+  ValidationLabel.Visible := False;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
